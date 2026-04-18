@@ -1,0 +1,17 @@
+{
+  "name": "browser-tab-group-manager",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.2.2",
+    "@types/bun": "latest",
+    "@types/chrome": "^0.1.40",
+    "@types/wicg-file-system-access": "^2023.10.7",
+    "chokidar-cli": "^3.0.0",
+    "concurrently": "^9.2.1"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}

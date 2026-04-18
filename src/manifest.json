@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "Tab Group Manager",
+  "version": "0.1.0",
+  "description": "Manage windows, tabs, and tab groups",
+  "permissions": ["offscreen", "tabs", "tabGroups", "storage"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Tab Group Manager"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  }
+}
