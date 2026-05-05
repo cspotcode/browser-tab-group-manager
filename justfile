@@ -6,6 +6,10 @@ export PATH := source_dir() + '/node_modules/.bin' + PATH_VAR_SEP + env_var('PAT
 @default:
   just --list --unsorted
 
+init:
+  git submodule update --init --recursive
+  bun install
+
 # Build the extension into dist/
 build:
   just build-js
