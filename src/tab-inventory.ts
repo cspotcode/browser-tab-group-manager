@@ -101,6 +101,18 @@ function renderInventory(inventory: WindowData[]) {
 
     title.addEventListener('click', () => startRename(win.id!, title));
     titleRow.appendChild(title);
+
+    const copyBtn = document.createElement('button');
+    copyBtn.textContent = 'Copy as Markdown';
+    copyBtn.className = 'px-2 py-0.5 rounded bg-gray-200 hover:bg-gray-300 text-xs';
+    copyBtn.addEventListener('click', async () => {
+      await navigator.clipboard.writeText(toMarkdownWindow({ window: win, tabs, groups }, lastInventory));
+      const original = copyBtn.textContent;
+      copyBtn.textContent = 'Copied!';
+      setTimeout(() => { copyBtn.textContent = original; }, 1500);
+    });
+    titleRow.appendChild(copyBtn);
+
     section.appendChild(titleRow);
 
     const groupMap = new Map(groups.map((g) => [g.id, g]));
@@ -185,9 +197,7 @@ function renderTab(tab: chrome.tabs.Tab, indented: boolean, dupUrls: Set<string>
   link.className = 'text-blue-600 hover:underline';
   link.title = tab.url ?? '';
   const isDupUrl = tab.url ? dupUrls.has(tab.url) : false;
-  link.textContent = isDupUrl
-    ? `⚠️ ${tab.title ?? tab.url ?? '(untitled)'} [DUPLICATE]`
-    : (tab.title ?? tab.url ?? '(untitled)');
+  link.textContent = tab.title ?? tab.url ?? '(untitled)';
 
   // Left-click focuses the tab; ctrl/middle-click and right-click work naturally via href
   link.addEventListener('click', (e) => {
@@ -201,7 +211,17 @@ function renderTab(tab: chrome.tabs.Tab, indented: boolean, dupUrls: Set<string>
     }
   });
 
+  if (isDupUrl) {
+    const warn = document.createElement('span');
+    warn.textContent = '⚠️ ';
+    el.appendChild(warn);
+  }
   el.appendChild(link);
+  if (isDupUrl) {
+    const dup = document.createElement('span');
+    dup.textContent = ' [DUPLICATE]';
+    el.appendChild(dup);
+  }
   return el;
 }
 
@@ -216,41 +236,56 @@ async function refresh() {
   renderInventory(lastInventory);
 }
 
+function windowToMarkdownLines(
+  { window: win, tabs, groups }: WindowData,
+  dupUrls: Set<string>,
+  dupGroupTitles: Set<string>,
+): string[] {
+  const lines: string[] = [];
+  lines.push(`# ${windowDisplayName(win)}`);
+  lines.push('');
+
+  const groupMap = new Map(groups.map((g) => [g.id, g]));
+  const renderedGroups = new Set<number>();
+
+  for (const tab of tabs) {
+    const inGroup = tab.groupId !== undefined && tab.groupId !== chrome.tabGroups.TAB_GROUP_ID_NONE;
+    const group = inGroup ? groupMap.get(tab.groupId!) : undefined;
+
+    if (group && !renderedGroups.has(group.id)) {
+      renderedGroups.add(group.id);
+      const emoji = GROUP_COLOR_EMOJI[group.color] ?? '⚪';
+      const isDup = group.title && dupGroupTitles.has(group.title);
+      const groupTitle = isDup ? `${group.title} [DUPLICATE]` : (group.title ?? '(unnamed group)');
+      lines.push(`- ${isDup ? '⚠️ ' : ''}${emoji} ${groupTitle}`);
+    }
+
+    const isDupUrl = tab.url ? dupUrls.has(tab.url) : false;
+    const title = tab.title ?? tab.url ?? '(untitled)';
+    const indent = inGroup ? '  ' : '';
+    const dupPrefix = isDupUrl ? '⚠️ ' : '';
+    const dupSuffix = isDupUrl ? ' [DUPLICATE]' : '';
+    lines.push(`${indent}- ${dupPrefix}[${title}](${tab.url ?? ''})${dupSuffix}`);
+  }
+
+  return lines;
+}
+
 function toMarkdown(inventory: WindowData[]): string {
   const { urls: dupUrls, groupTitles: dupGroupTitles } = buildDuplicateSets(inventory);
   const lines: string[] = [];
 
-  for (const { window: win, tabs, groups } of inventory) {
-    lines.push(`# ${windowDisplayName(win)}`);
-    lines.push('');
-
-    const groupMap = new Map(groups.map((g) => [g.id, g]));
-    const renderedGroups = new Set<number>();
-
-    for (const tab of tabs) {
-      const inGroup = tab.groupId !== undefined && tab.groupId !== chrome.tabGroups.TAB_GROUP_ID_NONE;
-      const group = inGroup ? groupMap.get(tab.groupId!) : undefined;
-
-      if (group && !renderedGroups.has(group.id)) {
-        renderedGroups.add(group.id);
-        const emoji = GROUP_COLOR_EMOJI[group.color] ?? '⚪';
-        const isDup = group.title && dupGroupTitles.has(group.title);
-        const groupTitle = isDup ? `${group.title} [DUPLICATE]` : (group.title ?? '(unnamed group)');
-        lines.push(`- ${isDup ? '⚠️ ' : ''}${emoji} ${groupTitle}`);
-      }
-
-      const isDupUrl = tab.url ? dupUrls.has(tab.url) : false;
-      const title = isDupUrl
-        ? `⚠️ ${tab.title ?? tab.url ?? '(untitled)'} [DUPLICATE]`
-        : (tab.title ?? tab.url ?? '(untitled)');
-      const indent = inGroup ? '  ' : '';
-      lines.push(`${indent}- [${title}](${tab.url ?? ''})`);
-    }
-
+  for (const winData of inventory) {
+    lines.push(...windowToMarkdownLines(winData, dupUrls, dupGroupTitles));
     lines.push('');
   }
 
   return lines.join('\n').trimEnd();
+}
+
+function toMarkdownWindow(winData: WindowData, inventory: WindowData[]): string {
+  const { urls: dupUrls, groupTitles: dupGroupTitles } = buildDuplicateSets(inventory);
+  return windowToMarkdownLines(winData, dupUrls, dupGroupTitles).join('\n').trimEnd();
 }
 
 let lastInventory: WindowData[] = [];
@@ -264,5 +299,25 @@ exportBtn.addEventListener('click', async () => {
 });
 
 document.getElementById('refresh-btn')!.addEventListener('click', refresh);
+
+document.getElementById('reload-ext-btn')!.addEventListener('click', () => {
+  chrome.runtime.sendMessage({ type: 'RELOAD_EXTENSION' });
+});
+
+const autoRefreshCheckbox = document.getElementById('auto-refresh') as HTMLInputElement;
+
+chrome.storage.local.get('autoRefresh', (result) => {
+  autoRefreshCheckbox.checked = (result.autoRefresh as boolean | undefined) ?? false;
+});
+
+autoRefreshCheckbox.addEventListener('change', () => {
+  chrome.storage.local.set({ autoRefresh: autoRefreshCheckbox.checked });
+});
+
+chrome.runtime.onMessage.addListener((message) => {
+  if (message.type === 'TAB_INVENTORY_CHANGED' && autoRefreshCheckbox.checked) {
+    refresh();
+  }
+});
 
 refresh();

@@ -42,25 +42,37 @@ async function setWindowName(windowId: number, name: string | null): Promise<voi
   await chrome.storage.local.set({ windowNames: names });
 }
 
-// On startup, open tab inventory
-chrome.tabs.create({ url: chrome.runtime.getURL('tab-inventory.html') });
+function broadcastInventoryChanged() {
+  chrome.runtime.sendMessage({ type: 'TAB_INVENTORY_CHANGED' }).catch(() => {
+    // No listeners open — ignore
+  });
+}
 
-// On startup, reopen any tab that was open when reload was triggered
-chrome.storage.session.get('reopenUrl', (result) => {
-  if (result.reopenUrl) {
-    chrome.tabs.create({ url: result.reopenUrl });
-    chrome.storage.session.remove('reopenUrl');
+// Register for all events that affect the tab inventory
+chrome.tabs.onCreated.addListener(broadcastInventoryChanged);
+chrome.tabs.onRemoved.addListener(broadcastInventoryChanged);
+chrome.tabs.onUpdated.addListener(broadcastInventoryChanged);
+chrome.tabs.onMoved.addListener(broadcastInventoryChanged);
+chrome.tabs.onAttached.addListener(broadcastInventoryChanged);
+chrome.tabs.onDetached.addListener(broadcastInventoryChanged);
+chrome.tabGroups.onCreated.addListener(broadcastInventoryChanged);
+chrome.tabGroups.onRemoved.addListener(broadcastInventoryChanged);
+chrome.tabGroups.onUpdated.addListener(broadcastInventoryChanged);
+chrome.windows.onCreated.addListener(broadcastInventoryChanged);
+chrome.windows.onRemoved.addListener(broadcastInventoryChanged);
+chrome.windows.onFocusChanged.addListener(broadcastInventoryChanged);
+
+// On startup, reopen tab inventory if flagged before reload
+chrome.storage.local.get('reopenTabInventory', (result) => {
+  if (result.reopenTabInventory) {
+    chrome.tabs.create({ url: chrome.runtime.getURL('tab-inventory.html') });
+    chrome.storage.local.remove('reopenTabInventory');
   }
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === 'ENSURE_OFFSCREEN') {
     ensureOffscreenDocument().then(() => sendResponse());
-    return true;
-  }
-
-  if (message.type === 'REOPEN_AFTER_RELOAD') {
-    chrome.storage.session.set({ reopenUrl: message.url }, () => sendResponse());
     return true;
   }
 
@@ -77,6 +89,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === 'SET_WINDOW_NAME') {
     setWindowName(message.windowId, message.name).then(() => sendResponse());
     return true;
+  }
+
+  if (message.type === 'RELOAD_EXTENSION') {
+    chrome.storage.local.set({ reopenTabInventory: true }, () => {
+      chrome.runtime.reload();
+    });
+    return false;
   }
 });
 
