@@ -1,7 +1,7 @@
 // Tab inventory page
 import { observable, computed, action, makeObservable, configure, autorun } from 'mobx';
 import { observer, useLocalObservable } from 'mobx-react-lite';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import * as messaging from './messaging';
 import * as backgroundTypes from './background';
@@ -61,6 +61,13 @@ class InventoryStore {
 
   @action setWindows(windows: WindowData[]) {
     this.windows = windows;
+  }
+
+  @action reorderWindows(fromIndex: number, toIndex: number) {
+    const next = this.windows.slice();
+    const moved = next.splice(fromIndex, 1)[0]!;
+    next.splice(toIndex, 0, moved);
+    this.windows = next;
   }
 
   @computed get duplicates(): { urls: Set<string>; groupTitles: Set<string> } {
@@ -191,18 +198,45 @@ function toMarkdownWindow(winData: WindowData): string {
 // ── Components ────────────────────────────────────────────────────────────────
 
 const Summary = observer(() => {
+  const dragIndex = useRef<number | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+
   return (
     <div id="summary" className="mb-6 space-y-0.5">
-      {inventoryStore.windows.map((winData) => {
+      {inventoryStore.windows.map((winData, i) => {
         const win = winData.window;
         const label = win.focused
           ? `${windowNamesStore.windowDisplayName(win)} (focused)`
           : windowNamesStore.windowDisplayName(win);
+        const isOver = dragOverIndex === i;
         return (
           <a
             key={win.id}
             href={`#window-${win.id}`}
-            className="block text-blue-600 hover:underline text-xs"
+            draggable
+            className={`block text-blue-600 hover:underline text-xs cursor-grab${isOver ? ' outline-2 outline-blue-400 rounded' : ''}`}
+            onDragStart={(e) => {
+              dragIndex.current = i;
+              e.dataTransfer.effectAllowed = 'move';
+            }}
+            onDragOver={(e) => {
+              e.preventDefault();
+              e.dataTransfer.dropEffect = 'move';
+              setDragOverIndex(i);
+            }}
+            onDragLeave={() => setDragOverIndex(null)}
+            onDrop={(e) => {
+              e.preventDefault();
+              if (dragIndex.current !== null && dragIndex.current !== i) {
+                inventoryStore.reorderWindows(dragIndex.current, i);
+              }
+              dragIndex.current = null;
+              setDragOverIndex(null);
+            }}
+            onDragEnd={() => {
+              dragIndex.current = null;
+              setDragOverIndex(null);
+            }}
           >
             {label}
           </a>
@@ -229,7 +263,10 @@ const Window = observer((props: WindowProps) => {
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (state.isRenaming) inputRef.current?.focus();
+    if (state.isRenaming) {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    }
   }, [state.isRenaming]);
 
   function startRename() {

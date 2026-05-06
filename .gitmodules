@@ -1,3 +1,4 @@
 [submodule "dev"]
 	path = dev
 	url = https://github.com/cspotcode/browser-tab-group-manager-dev
+	branch = main
