@@ -46,10 +46,11 @@ build-static:
   cp src/popup.html dist/popup.html
   cp src/offscreen.html dist/offscreen.html
   cp src/tab-inventory.html dist/tab-inventory.html
+  cp src/window-name.html dist/window-name.html
   cp src/manifest.json dist/manifest.json
 
 watch-static:
   # apparently chokidar --initial doesnt work with {path} templates?
   # So build before watch
   just build-static
-  chokidar 'src/popup.html' 'src/offscreen.html' 'src/tab-inventory.html' 'src/manifest.json' -c "cp '{path}' dist/"
+  chokidar 'src/popup.html' 'src/offscreen.html' 'src/tab-inventory.html' 'src/window-name.html' 'src/manifest.json' -c "cp '{path}' dist/"

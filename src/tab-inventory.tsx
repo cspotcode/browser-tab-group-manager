@@ -444,6 +444,12 @@ const Root = observer(() => {
         </button>
         <button
           className="px-3 py-1 rounded bg-gray-200 hover:bg-gray-300 text-xs"
+          onClick={() => background.syncAllNameTabs()}
+        >
+          Sync name tabs
+        </button>
+        <button
+          className="px-3 py-1 rounded bg-gray-200 hover:bg-gray-300 text-xs"
           onClick={() => background.reloadExtension()}
         >
           Reload extension
@@ -466,6 +472,9 @@ class BackgroundService implements backgroundTypes.BackgroundService {
   }
   setWindowName(windowId: number, name: string | null): Promise<void> {
     return messaging.send<backgroundTypes.BackgroundService, 'setWindowName'>('setWindowName', windowId, name);
+  }
+  syncAllNameTabs(): Promise<void> {
+    return messaging.send<backgroundTypes.BackgroundService, 'syncAllNameTabs'>('syncAllNameTabs');
   }
   reloadExtension(): Promise<void> {
     return messaging.send<backgroundTypes.BackgroundService, 'reloadExtension'>('reloadExtension');
