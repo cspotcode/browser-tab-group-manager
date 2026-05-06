@@ -6,19 +6,8 @@
   <title>Tab Inventory</title>
   <link rel="stylesheet" href="popup.css" />
 </head>
-<body class="p-6 font-sans text-sm">
-  <div class="flex items-center gap-3 mb-4">
-    <h1 class="text-lg font-semibold">Tab Inventory</h1>
-    <button id="refresh-btn" class="px-3 py-1 rounded bg-blue-500 hover:bg-blue-600 text-white text-xs">Refresh</button>
-    <label class="flex items-center gap-1.5 text-xs cursor-pointer select-none">
-      <input type="checkbox" id="auto-refresh" />
-      Auto-refresh
-    </label>
-    <button id="export-btn" class="px-3 py-1 rounded bg-gray-200 hover:bg-gray-300 text-xs">Copy as Markdown</button>
-    <button id="reload-ext-btn" class="px-3 py-1 rounded bg-gray-200 hover:bg-gray-300 text-xs">Reload extension</button>
-  </div>
-  <div id="summary" class="mb-6 space-y-0.5"></div>
-  <div id="inventory" class="space-y-4"></div>
+<body>
+  <div id="root"></div>
   <script type="module" src="tab-inventory.js"></script>
 </body>
 </html>

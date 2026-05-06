@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "description": "Manage windows, tabs, and tab groups",
   "permissions": ["offscreen", "tabs", "tabGroups", "storage"],
+  "message_serialization": "structured_clone",
   "action": {
     "default_popup": "popup.html",
     "default_title": "Tab Group Manager"

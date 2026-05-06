@@ -2,7 +2,8 @@
   "compilerOptions": {
     // Environment setup & latest features
     "lib": ["ESNext", "DOM"],
-    "target": "ESNext",
+    // Any higher and esbuild doesn't downlevel the decorators
+    "target": "ES2021",
     "module": "Preserve",
     "moduleDetection": "force",
     "jsx": "react-jsx",
@@ -13,6 +14,9 @@
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
     "noEmit": true,
+
+    // Must be false to ensure using ES decorators, not legacy TS experimentalDecorators
+    "experimentalDecorators": false,
 
     // Best practices
     "strict": true,

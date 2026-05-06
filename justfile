@@ -22,11 +22,19 @@ watch:
     "just watch-css" \
     "just watch-static"
 
+typecheck:
+  tsc --noEmit
+
 build-js:
-  bun build --target=browser --format=esm --outdir=dist src/popup.ts src/background.ts src/offscreen.ts src/tab-inventory.ts
+  esbuild --bundle --platform=browser --format=esm --sourcemap=linked --outdir=dist src/popup.ts src/background.ts src/offscreen.ts src/tab-inventory.tsx
+
+  # Bun has a bug, so we cant use it
+  # bun build --target=browser --format=esm --sourcemap=linked --outdir=dist src/popup.ts src/background.ts src/offscreen.ts src/tab-inventory.tsx
 
 watch-js:
-  bun build --target=browser --format=esm --outdir=dist --watch src/popup.ts src/background.ts src/offscreen.ts src/tab-inventory.ts
+  esbuild --bundle --platform=browser --format=esm --sourcemap=linked --outdir=dist --watch src/popup.ts src/background.ts src/offscreen.ts src/tab-inventory.tsx
+
+  # bun build --target=browser --format=esm --sourcemap=linked --outdir=dist --watch src/popup.ts src/background.ts src/offscreen.ts src/tab-inventory.tsx
 
 build-css:
   tailwindcss -i src/popup.css -o dist/popup.css
@@ -41,7 +49,7 @@ build-static:
   cp src/manifest.json dist/manifest.json
 
 watch-static:
-  # apparently chokidar --initial doesn't work with {path} templates?
+  # apparently chokidar --initial doesnt work with {path} templates?
   # So build before watch
   just build-static
   chokidar 'src/popup.html' 'src/offscreen.html' 'src/tab-inventory.html' 'src/manifest.json' -c "cp '{path}' dist/"
