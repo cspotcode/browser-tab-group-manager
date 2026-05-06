@@ -1,0 +1,16 @@
+set dotenv-load
+set positional-arguments
+
+export PATH := source_dir() + '/node_modules/.bin' + PATH_VAR_SEP + env_var('PATH')
+
+@default:
+  just --list --unsorted
+
+install:
+  bun install
+
+build:
+  bun build         --target=browser --format=esm --sourcemap=linked --outdir=dist main.tsx
+
+watch:
+  bun build --watch --target=browser --format=esm --sourcemap=linked --outdir=dist main.tsx
