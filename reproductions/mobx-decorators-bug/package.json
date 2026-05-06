@@ -9,8 +9,16 @@
     "react-dom": "^19.2.5"
   },
   "devDependencies": {
+    "@babel/cli": "^7.28.6",
+    "@babel/core": "^7.29.0",
+    "@babel/plugin-proposal-decorators": "^7.29.0",
+    "@babel/preset-env": "^7.29.5",
+    "@babel/preset-react": "^7.28.5",
+    "@babel/preset-typescript": "^7.28.5",
     "@types/react": "^19.2.14",
-    "@types/react-dom": "^19.2.3"
+    "@types/react-dom": "^19.2.3",
+    "esbuild": "^0.28.0",
+    "esbuild-plugin-babel": "^0.2.3"
   },
   "peerDependencies": {
     "typescript": "^5"

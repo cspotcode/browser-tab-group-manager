@@ -9,8 +9,35 @@ export PATH := source_dir() + '/node_modules/.bin' + PATH_VAR_SEP + env_var('PAT
 install:
   bun install
 
-build:
+build-bun:
   bun build         --target=browser --format=esm --sourcemap=linked --outdir=dist main.tsx
 
-watch:
+watch-bun:
   bun build --watch --target=browser --format=esm --sourcemap=linked --outdir=dist main.tsx
+
+build-babel:
+  babel main.tsx --out-file dist/main.js --source-maps
+
+watch-babel:
+  babel main.tsx --out-file dist/main.js --source-maps --watch
+
+# USE THIS
+watch-esbuild:
+    esbuild --bundle --platform=browser --format=esm --sourcemap=linked --outdir=dist --watch main.tsx
+
+build-esbuild-babel:
+  node build.mjs
+
+watch-esbuild-babel:
+  node build.mjs --watch
+
+transpile-bun:
+  bun build --target=browser --format=esm --sourcemap=linked --outdir=dist/transpile-bun transpile-decorators-test.ts
+
+transpile-esbuild:
+  esbuild --bundle --platform=browser --format=esm --sourcemap=linked --outdir=dist/transpile-esbuild --watch transpile-decorators-test.ts
+
+transpile-esbuild-babel:
+  node build-transpile.mjs
+
+transpile: transpile-bun transpile-esbuild-babel
