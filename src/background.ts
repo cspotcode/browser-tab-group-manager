@@ -1,13 +1,12 @@
 // Background service worker
+import type { LocalStorage } from './local-storage';
 import * as messaging from './messaging';
+import { parseGroupNameWithColor, formatGroupNameWithColor } from './tab-group-colors';
+import type { ActiveWindow, TabInfo, ArchivedWindow, WindowItem, TabGroupInfo } from './window';
 
-// --- types ---
-
-export type WindowEntry = {
-  window: chrome.windows.Window;
-  tabs: chrome.tabs.Tab[];
-  groups: chrome.tabGroups.TabGroup[];
-};
+if (typeof window !== 'undefined' || !(self instanceof ServiceWorkerGlobalScope)) {
+  throw new Error("This script must be run within a Service Worker context.");
+}
 
 // --- window-name anchor tab helpers ---
 
@@ -82,54 +81,394 @@ async function ensureOffscreen(): Promise<void> {
   });
 }
 
-async function getTabInventory(): Promise<WindowEntry[]> {
-  const [windows, allTabs, allGroups] = await Promise.all([
+async function queryActiveWindows(): Promise<ActiveWindow[]> {
+  const [chromeWindows, allChromeTabs, allChromeGroups, namesSerialized] = await Promise.all([
     chrome.windows.getAll(),
     chrome.tabs.query({}),
     chrome.tabGroups.query({}),
+    getSerializedWindowNames(),
   ]);
+  const names = messaging.deserializeMap(namesSerialized);
 
-  return windows.map((win) => {
-    const tabs = allTabs.filter((t) => t.windowId === win.id);
-    const groups = allGroups.filter((g) => g.windowId === win.id);
-    return { window: win, tabs, groups };
+  return chromeWindows.map((chromeWindow) => {
+    const chromeTabs = allChromeTabs.filter((t) => t.windowId === chromeWindow.id);
+    const chromeGroups = allChromeGroups.filter((g) => g.windowId === chromeWindow.id);
+    const chromeGroupsMap = new Map(chromeGroups.map((g) => [g.id, g]));
+    const groupInfos = new Map<number, TabGroupInfo>();
+    const items: WindowItem[] = [];
+
+    for (const tab of chromeTabs) {
+      const tabInfo: TabInfo = {
+        title: tab.title ?? tab.url ?? '(untitled)',
+        url: tab.url ?? '',
+        id: tab.id,
+      };
+
+      const inGroup = tab.groupId !== undefined && tab.groupId !== chrome.tabGroups.TAB_GROUP_ID_NONE;
+      if (inGroup) {
+        let groupInfo = groupInfos.get(tab.groupId);
+        if(!groupInfo) {
+          const chromeGroup = chromeGroupsMap.get(tab.groupId!)!;
+          groupInfo = {
+            name: chromeGroup.title ?? '',
+            id: chromeGroup.id,
+            color: chromeGroup.color,
+            tabs: [],
+          };
+          groupInfos.set(tab.groupId, groupInfo);
+          items.push({
+            type: 'group',
+            group: groupInfo
+          });
+        }
+        groupInfo.tabs.push(tabInfo);
+      } else {
+        items.push({
+          type: 'ungroupedTab',
+          tab: tabInfo
+        });
+      }
+    }
+
+    // Always have an ID here; would only be absent if we queried the sessions API
+    const windowId = chromeWindow.id!;
+
+    const name = names.get(windowId);
+
+    const ret: ActiveWindow = {
+      chromeWindow,
+      id: windowId,
+      name,
+      items
+    };
+
+    return ret;
   });
 }
 
-async function getWindowNames(): Promise<messaging.SerializedMap<number, string>> {
-  const result = await chrome.storage.local.get('windowNames');
-  return (result.windowNames as messaging.SerializedMap<number, string>) ?? [];
+/** For calls within background.ts which can access a deserialized value directly */
+async function getWindowNames(): Promise<Map<number, string>> {
+  const result = await chrome.storage.local.get<LocalStorage>('windowNames');
+  return messaging.deserializeMap(result.windowNames as messaging.SerializedMap<number, string>);
+}
+/** For calls from outside background.ts which need the serialized value */
+async function getSerializedWindowNames(): Promise<messaging.SerializedMap<number, string>> {
+  const result = await chrome.storage.local.get<LocalStorage>('windowNames');
+  return result.windowNames ?? [];
 }
 
-async function setWindowName(windowId: number, name: string | null): Promise<void> {
-  const names = messaging.deserializeMap(await getWindowNames());
-  if (name === null || name.trim() === '') {
+async function setWindowName(windowId: number, name: string | undefined): Promise<void> {
+  const names = await getWindowNames();
+  if (name == null || name.trim() === '') {
     names.delete(windowId);
-    await chrome.storage.local.set({ windowNames: messaging.serializeMap(names) });
+    await chrome.storage.local.set<LocalStorage>({ windowNames: messaging.serializeMap(names) });
     await removeNameTab(windowId);
   } else {
     const trimmed = name.trim();
     names.set(windowId, trimmed);
-    await chrome.storage.local.set({ windowNames: messaging.serializeMap(names) });
+    await chrome.storage.local.set<LocalStorage>({ windowNames: messaging.serializeMap(names) });
     await syncNameTab(windowId, trimmed);
   }
 }
 
 async function syncAllNameTabs(): Promise<void> {
-  const names = messaging.deserializeMap(await getWindowNames());
+  const names = await getWindowNames();
   await Promise.all(
     Array.from(names.entries()).map(([windowId, name]) => syncNameTab(windowId, name))
   );
 }
 
 async function reloadExtension(): Promise<void> {
-  await chrome.storage.local.set({ reopenTabInventory: true });
+  await chrome.storage.local.set<LocalStorage>({ reopenTabInventory: true });
   chrome.runtime.reload();
 }
 
 async function sandbox(): Promise<string> {
   // use this for quick message-passing debugging
   return 'Hello world!';
+}
+
+// --- Archived windows / bookmarks management ---
+
+const ARCHIVED_WINDOWS_FOLDER_NAME = 'Archived Windows';
+
+/** Find or create the "Archived Windows" root folder in bookmarks. */
+async function getOrCreateArchivedWindowsFolder(): Promise<chrome.bookmarks.BookmarkTreeNode> {
+  const trees = await chrome.bookmarks.getTree();
+  const root = trees[0];
+  if (!root) throw new Error('Bookmarks root not found');
+
+  async function findFolder(node: chrome.bookmarks.BookmarkTreeNode): Promise<chrome.bookmarks.BookmarkTreeNode | null> {
+    if (node.children) {
+      for (const child of node.children) {
+        if (child.title === ARCHIVED_WINDOWS_FOLDER_NAME && !child.url) {
+          return child;
+        }
+        const found = await findFolder(child);
+        if (found) return found;
+      }
+    }
+    return null;
+  }
+
+  const existing = await findFolder(root);
+  if (existing) return existing;
+
+  // Create in root (typically "Other Bookmarks")
+  const created = await chrome.bookmarks.create({
+    title: ARCHIVED_WINDOWS_FOLDER_NAME,
+  });
+  return created;
+}
+
+/** Query archived windows from bookmarks. */
+async function queryArchivedWindows(): Promise<ArchivedWindow[]> {
+  try {
+    const archivedFolder = await getOrCreateArchivedWindowsFolder();
+    if (!archivedFolder.children) return [];
+
+    const result: ArchivedWindow[] = [];
+
+    for (const windowFolder of archivedFolder.children) {
+      if (!windowFolder.children || windowFolder.url) continue;
+
+      result.push(parseArchivedWindowFromBookmarks(windowFolder));
+    }
+
+    return result;
+  } catch (error) {
+    console.error('Error querying archived windows:', error);
+    return [];
+  }
+}
+
+/**
+ * @param windowFolder *Must* be a folder tree node. Caller should validate this.
+ */
+function parseArchivedWindowFromBookmarks(windowFolder: chrome.bookmarks.BookmarkTreeNode): ArchivedWindow {
+      const items: WindowItem[] = [];
+
+      for (const item of windowFolder.children!) {
+        if (item.url) {
+          // Ungrouped tab (bookmark)
+          items.push({
+            type: 'ungroupedTab',
+            tab: {
+              title: item.title ?? '(untitled)',
+              url: item.url,
+            },
+          });
+        } else if (item.children) {
+          // Tab group (folder with bookmarks)
+          const { color, name } = parseGroupNameWithColor(item.title ?? '');
+          const groupTabs: TabInfo[] = item.children
+            .filter((b): b is chrome.bookmarks.BookmarkTreeNode => b !== undefined && b.url !== undefined)
+            .map((b) => ({
+              title: b.title ?? '(untitled)',
+              url: b.url!,
+            }));
+
+          items.push({
+            type: 'group',
+            group: {
+              name,
+              color,
+              tabs: groupTabs,
+            },
+          });
+        }
+      }
+
+      const ret: ArchivedWindow = {
+        bookmarkFolderId: windowFolder.id,
+        id: undefined,
+        name: windowFolder.title ?? 'Unnamed Window',
+        items,
+      };
+      return ret;
+}
+
+/** Check if an archive with the given name already exists. */
+async function findArchivedWindowByName(windowName: string): Promise<chrome.bookmarks.BookmarkTreeNode | null> {
+  try {
+    const archivedFolder = await getOrCreateArchivedWindowsFolder();
+    if (!archivedFolder.children) return null;
+
+    for (const child of archivedFolder.children) {
+      if (child.title === windowName && !child.url) {
+        return child;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/** Archive a window: create bookmarks and optionally close the window. */
+async function archiveWindow(windowId: number, keepWindow: boolean, overwriteExisting: boolean = false): Promise<void> {
+  try {
+    const [allTabs, allGroups, names, windows] = await Promise.all([
+      chrome.tabs.query({ windowId }),
+      chrome.tabGroups.query({ windowId }),
+      getWindowNames(),
+      chrome.windows.getAll(),
+    ]);
+
+    const window = windows.find((w) => w.id === windowId);
+    if (!window || window.id === undefined) throw new Error(`Window ${windowId} not found or invalid`);
+
+    const windowName = names.get(windowId) ?? `Window ${windowId}`;
+
+    const archivedFolder = await getOrCreateArchivedWindowsFolder();
+
+    let windowFolder: chrome.bookmarks.BookmarkTreeNode;
+    const existing = await findArchivedWindowByName(windowName);
+
+    if (existing) {
+      if (!overwriteExisting) {
+        // TODO throwing an error in background.ts is not helpful because the user doesn't see this, they only observe a timeout.
+        throw new Error(`ARCHIVE_EXISTS:${windowName}`);
+      }
+      // Remove existing archive before creating new one
+      await chrome.bookmarks.removeTree(existing.id);
+    }
+
+    windowFolder = await chrome.bookmarks.create({
+      parentId: archivedFolder.id,
+      title: windowName,
+    });
+
+    const groupMap = new Map(allGroups.map((g) => [g.id, g]));
+    const renderedGroups = new Set<number>();
+    const groupFolderMap = new Map<number, string>();
+
+    // Process tabs in order to preserve interleaving of groups and ungrouped tabs
+    for (const tab of allTabs) {
+      const inGroup =
+        tab.groupId !== undefined && tab.groupId !== chrome.tabGroups.TAB_GROUP_ID_NONE;
+      const group = inGroup ? groupMap.get(tab.groupId!) : undefined;
+
+      if (inGroup && group && !renderedGroups.has(group.id)) {
+        // First encounter with this group — create the group folder
+        renderedGroups.add(group.id);
+        const groupTitle = formatGroupNameWithColor(group.title ?? '(unnamed group)', group.color);
+        const groupFolder = await chrome.bookmarks.create({
+          parentId: windowFolder.id,
+          title: groupTitle,
+        });
+        groupFolderMap.set(group.id, groupFolder.id);
+      }
+
+      // Create the tab bookmark in the appropriate parent
+      const tabTitle = tab.title ?? tab.url ?? '(untitled)';
+      const tabUrl = tab.url ?? '';
+      const parentId = inGroup && groupFolderMap.has(tab.groupId!)
+        ? groupFolderMap.get(tab.groupId!)!
+        : windowFolder.id;
+
+      await chrome.bookmarks.create({
+        parentId,
+        title: tabTitle,
+        url: tabUrl,
+      });
+    }
+
+    // Close window if not keeping it
+    if (!keepWindow) {
+      await chrome.windows.remove(windowId);
+    }
+
+    broadcastArchivedWindowsChanged();
+  } catch (error) {
+    // TODO see earlier TODO: doing this in background.ts is not helpful.
+    console.error('Error archiving window:', error);
+    throw error;
+  }
+}
+
+let restorationIndex = 0;
+/** Restore an archived window: create new window from bookmarks and optionally delete bookmarks. */
+async function restoreWindow(archivedWindowId: string, keepBookmarks: boolean): Promise<void> {
+  console.dir({restorationIndex});
+  restorationIndex++;
+  try {
+    const [windowFolder] = await chrome.bookmarks.getSubTree(archivedWindowId);
+    if (!windowFolder || windowFolder.url || !windowFolder.children) {
+      throw new Error(`Archived window folder ${archivedWindowId} not found or invalid`);
+    }
+
+    const archivedWindow = parseArchivedWindowFromBookmarks(windowFolder);
+    console.dir(archivedWindow);
+
+    const urls: string[] = [];
+    interface RestorationGroup {
+      group: TabGroupInfo;
+      tabIndices: number[];
+    }
+    const rgroups: Array<RestorationGroup> = [];
+
+    // First pass: collect all tabs and determine structure
+    let tabIndex = 0;
+    for (const item of archivedWindow.items) {
+      if (item.type === 'ungroupedTab') {
+        // Ungrouped tab
+        urls.push(item.tab.url);
+        tabIndex++;
+      } else {
+        // Tab group
+        const rgroup: RestorationGroup = {
+          group: item.group,
+          tabIndices: []
+        };
+        rgroups.push(rgroup);
+
+        for (const tab of item.group.tabs) {
+          if (tab.url) {
+            urls.push(tab.url);
+            rgroup.tabIndices.push(tabIndex);
+            tabIndex++;
+          }
+        }
+      }
+    }
+
+    // Create window with all tabs in correct order, ungrouped
+    const newWindow = await chrome.windows.create({ url: urls, focused: true });
+    console.dir({newWindow: {id: newWindow!.id}});
+    const createdTabs = newWindow!.tabs ?? [];
+
+    // Create tab groups
+    for (const group of rgroups) {
+      const tabIds = group.tabIndices
+        .map((idx) => createdTabs[idx]?.id)
+        .filter((id): id is number => id !== undefined);
+
+      if (tabIds.length > 0) {
+        const groupId = await chrome.tabs.group({
+          createProperties: {
+            windowId: newWindow!.id
+          },
+          // chrome.tabs.group declares types for array of at least 1 element. Annoying...
+          tabIds: tabIds as [number, ...number[]]
+        });
+        await chrome.tabGroups.update(groupId, {
+          title: group.group.name,
+          color: group.group.color,
+        });
+      }
+    }
+
+    // Delete archived bookmarks if not keeping them
+    if (!keepBookmarks) {
+      await chrome.bookmarks.removeTree(archivedWindowId);
+    }
+
+    broadcastArchivedWindowsChanged();
+  } catch (error) {
+    console.error('Error restoring window:', error);
+    throw error;
+  }
 }
 
 // --- bind to all tab change events ---
@@ -147,13 +486,51 @@ chrome.windows.onCreated.addListener(broadcastInventoryChanged);
 chrome.windows.onRemoved.addListener(broadcastInventoryChanged);
 chrome.windows.onFocusChanged.addListener(broadcastInventoryChanged);
 
+async function openEdgeFavorites(): Promise<void> {
+  await chrome.tabs.create({ url: 'edge://favorites' });
+}
+
+// --- bind to bookmark change events for archived windows ---
+
+async function isArchivedWindowsBookmark(bookmarkId: string): Promise<boolean> {
+  try {
+    const [node] = await chrome.bookmarks.getSubTree(bookmarkId);
+    if (!node) return false;
+
+    // Check if the node is under the archived windows folder
+    const archivedFolder = await getOrCreateArchivedWindowsFolder();
+    if (node.parentId === archivedFolder.id) return true;
+
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+chrome.bookmarks.onCreated.addListener(async (id) => {
+  if (await isArchivedWindowsBookmark(id)) {
+    broadcastArchivedWindowsChanged();
+  }
+});
+
+chrome.bookmarks.onRemoved.addListener(async () => {
+  // Always broadcast on bookmark removal since we can't reliably check after deletion
+  broadcastArchivedWindowsChanged();
+});
+
+chrome.bookmarks.onChanged.addListener(async (id) => {
+  if (await isArchivedWindowsBookmark(id)) {
+    broadcastArchivedWindowsChanged();
+  }
+});
+
 // --- startup init ---
 
 // On startup, reopen tab inventory if flagged before reload
-chrome.storage.local.get('reopenTabInventory', (result) => {
+chrome.storage.local.get<LocalStorage>('reopenTabInventory', (result) => {
   if (result.reopenTabInventory) {
     chrome.tabs.create({ url: chrome.runtime.getURL('tab-inventory.html') });
-    chrome.storage.local.remove('reopenTabInventory');
+    chrome.storage.local.remove<LocalStorage>('reopenTabInventory');
   }
 });
 
@@ -167,7 +544,7 @@ async function recoverWindowNamesFromTabs(): Promise<void> {
   const [windows, allTabs, storedNames] = await Promise.all([
     chrome.windows.getAll(),
     chrome.tabs.query({}),
-    getWindowNames().then((s) => messaging.deserializeMap(s)),
+    getSerializedWindowNames().then((s) => messaging.deserializeMap(s)),
   ]);
 
   let changed = false;
@@ -188,7 +565,7 @@ async function recoverWindowNamesFromTabs(): Promise<void> {
   }
 
   if (changed) {
-    await chrome.storage.local.set({ windowNames: messaging.serializeMap(storedNames) });
+    await chrome.storage.local.set<LocalStorage>({ windowNames: messaging.serializeMap(storedNames) });
   }
 }
 
@@ -196,11 +573,22 @@ recoverWindowNamesFromTabs();
 
 // --- Bind messaging ---
 
-const messageListeners = { getTabInventory, getWindowNames, setWindowName, syncAllNameTabs, reloadExtension, ensureOffscreen, sandbox };
-export type BackgroundService = typeof messageListeners;
+const messageListeners = {
+  queryActiveWindows, queryArchivedWindows,
+  getSerializedWindowNames, setWindowName,
+  syncAllNameTabs, reloadExtension, ensureOffscreen, 
+  archiveWindow, restoreWindow,
+  openEdgeFavorites,
+  sandbox,
+};
+export type IBackgroundService = typeof messageListeners;
 messaging.bindListeners(messageListeners);
 
 // Register for all events that affect the tab inventory
 function broadcastInventoryChanged() {
   messaging.sendNotification('tabInventoryChanged');
+}
+
+function broadcastArchivedWindowsChanged() {
+  messaging.sendNotification('archivedWindowsChanged');
 }

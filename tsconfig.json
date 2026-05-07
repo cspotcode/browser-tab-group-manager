@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
     // Environment setup & latest features
-    "lib": ["ESNext", "DOM"],
+    "lib": ["ESNext", "DOM", "WebWorker"],
     // Any higher and esbuild doesn't downlevel the decorators
     "target": "ES2021",
     "module": "Preserve",
@@ -29,5 +29,6 @@
     "noUnusedLocals": false,
     "noUnusedParameters": false,
     "noPropertyAccessFromIndexSignature": false
-  }
+  },
+  "include": ["src"]
 }
